@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title> لعبة سند Bird</title>
+  <style>
+    :root{ --bg:#70c5ce; --ground:#ded895; --pipe:#2d9c3b; --bird:#ffdd57 }
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    .wrap{height:100%;display:flex;align-items:center;justify-content:center;background:linear-gradient(#c7f0f8, var(--bg));padding:18px;box-sizing:border-box}
+    .game-card{width:min(760px,96vw);max-width:760px;background:rgba(255,255,255,0.02);border-radius:12px;box-shadow:0 8px 30px rgba(10,10,10,0.12);overflow:hidden;}
+    header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:rgba(255,255,255,0.03);}
+    header h1{font-size:16px;margin:0;color:#012;}
+    header .controls{display:flex;gap:8px;align-items:center}
+    button{background:#fff;border:0;padding:8px 10px;border-radius:8px;cursor:pointer;font-weight:600}
+    button.secondary{background:transparent;border:1px solid rgba(255,255,255,0.06);color:#fff}
+    canvas{display:block;width:100%;height:640px;background:linear-gradient(#c7f0f8, var(--bg));touch-action:none}
+    .overlay{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#012;text-align:center;padding:18px;border-radius:12px}
+    .hud{position:absolute;right:18px;top:18px;background:rgba(255,255,255,0.06);backdrop-filter:blur(4px);padding:8px 12px;border-radius:10px;color:#012;font-weight:700}
+    footer{padding:12px;color:#024;display:flex;justify-content:space-between;align-items:center;background:rgba(255,255,255,0.02)}
+    .sm{font-size:12px;opacity:.9}
+  </style>
+</head>
+<body dir="rtl">
+  <div class="wrap">
+    <div class="game-card" role="application" aria-label="لعبة فلابي">
+      <header>
+        <h1>لعبة الطير</h1>
+        <div class="controls">
+          <button id="btn-restart">إعادة تشغيل</button>
+          <button id="btn-help" class="secondary">كيف ألعب؟</button>
+        </div>
+      </header>
+
+      <div style="position:relative">
+        <canvas id="game"></canvas>
+        <div class="hud" id="scoreHud">0</div>
+        <div id="overlay" class="overlay" style="display:block;">
+          <h2 style="margin:0 0 8px">اضغط / انقر للطيران</h2>
+          <div class="sm"></div>
+        </div>
+      </div>
+
+      <footer>
+        <div class="sm">التحكم: إيقاع النقر أو مسافة شريط المسافة</div>
+        <div class="sm"></div>
+      </footer>
+    </div>
+  </div>
+
+<script>
+/* Flappy-lite: نسخة لعبة بسيطة في صفحة واحدة.
+   تعليمات سريعة: انقر / اضغط / اضغط مسافة للطيران. */
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const scoreHud = document.getElementById('scoreHud');
+const btnRestart = document.getElementById('btn-restart');
+const btnHelp = document.getElementById('btn-help');
+
+let devicePixelRatioBackup = window.devicePixelRatio || 1;
+
+function resizeCanvas(){
+  // Set canvas logical size for crisp rendering on hiDPI screens
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.round(rect.width * devicePixelRatioBackup);
+  canvas.height = Math.round(rect.height * devicePixelRatioBackup);
+  ctx.setTransform(devicePixelRatioBackup,0,0,devicePixelRatioBackup,0,0);
+}
+
+// initialize canvas size to a nice 3:2 area
+function initCanvasSize(){
+  const card = canvas.parentElement.getBoundingClientRect();
+  // maintain ~ 3:2 ratio with height cap
+  const width = card.width;
+  const height = Math.min(760, Math.max(360, width * (2/3)));
+  canvas.style.height = height + 'px';
+  resizeCanvas();
+}
+
+window.addEventListener('resize', ()=>{devicePixelRatioBackup = window.devicePixelRatio || 1; initCanvasSize();});
+initCanvasSize();
+
+// Game variables
+const gravity = 1000; // px/s^2
+const flapImpulse = -320; // px/s
+const pipeSpeed = 180; // px/s
+const pipeGap = 150; // gap height
+const pipeWidth = 60;
+const pipeInterval = 1500; // ms
+const groundHeight = 80;
+
+let bird = {};
+let pipes = [];
+let lastPipeTime = 0;
+let lastTime = 0;
+let running = false;
+let score = 0;
+let highScore = 0;
+
+function resetGame(){
+  bird = { x: 110, y: 200, vy: 0, radius: 18, angle:0 };
+  pipes = [];
+  lastPipeTime = performance.now();
+  lastTime = performance.now();
+  running = false;
+  score = 0;
+  scoreHud.textContent = '0';
+  overlay.style.display = 'block';
+  overlay.innerHTML = '<h2 style="margin:0 0 8px">اضغط / انقر للطيران</h2><div class="sm">تجنب الأنابيب وحقق أعلى عدد من النقاط</div>';
+}
+
+resetGame();
+
+function spawnPipe(){
+  const h = canvas.height / devicePixelRatioBackup;
+  const minY = 60;
+  const maxY = h - groundHeight - minY - pipeGap;
+  const top = Math.floor(Math.random() * (maxY - minY + 1) + minY);
+  pipes.push({ x: canvas.width/devicePixelRatioBackup + pipeWidth, top: top, passed: false });
+}
+
+function flap(){
+  bird.vy = flapImpulse;
+  running = true;
+  overlay.style.display = 'none';
+  // small audio beep using WebAudio
+  if(window.audioCtx){
+    const o = window.audioCtx.createOscillator();
+    const g = window.audioCtx.createGain();
+    o.type='sine'; o.frequency.value=520; g.gain.value=0.02;
+    o.connect(g); g.connect(window.audioCtx.destination);
+    o.start(); o.stop(window.audioCtx.currentTime + 0.03);
+  }
+}
+
+// Input handlers
+window.addEventListener('keydown', (e)=>{ if(e.code === 'Space'){ e.preventDefault(); flap(); } });
+window.addEventListener('mousedown', (e)=>{ flap(); });
+window.addEventListener('touchstart', (e)=>{ e.preventDefault(); flap(); }, {passive:false});
+btnRestart.addEventListener('click', ()=>{ resetGame(); });
+btnHelp.addEventListener('click', ()=>{ alert('التحكم: انقر/اضغط/مسافة للطيران. تجنب الأنابيب. اضغط إعادة تشغيل للبدء من جديد.'); });
+
+// setup audio context on first user gesture for compatibility
+window.addEventListener('pointerdown', ()=>{ if(!window.audioCtx){ window.audioCtx = new (window.AudioContext||window.webkitAudioContext)(); } }, {once:true});
+
+function rectsIntersect(r1, r2){
+  return !(r2.left > r1.right || r2.right < r1.left || r2.top > r1.bottom || r2.bottom < r1.top);
+}
+
+function update(dt){
+  if(!running) return;
+  // bird physics
+  bird.vy += gravity * dt;
+  bird.y += bird.vy * dt;
+  bird.angle = Math.max(Math.min(bird.vy / 400, 0.9), -0.7);
+
+  // spawn pipes
+  const now = performance.now();
+  if(now - lastPipeTime > pipeInterval){ spawnPipe(); lastPipeTime = now; }
+
+  // update pipes
+  for(let p of pipes){
+    p.x -= pipeSpeed * dt;
+    // check scoring
+    if(!p.passed && p.x + pipeWidth < bird.x - bird.radius){ p.passed = true; score++; scoreHud.textContent = score; if(score>highScore) highScore = score; }
+  }
+  // remove offscreen
+  pipes = pipes.filter(p => p.x + pipeWidth > -50);
+
+  // collisions
+  // ground
+  const h = canvas.height / devicePixelRatioBackup;
+  if(bird.y + bird.radius > h - groundHeight){ running = false; overlay.style.display='block'; overlay.innerHTML = '<h2>انتهت اللعبة</h2><div class="sm">نقاطك: '+score+' — أعلى: '+highScore+'</div><div class="sm" style="margin-top:8px">اضغط لإعادة التشغيل</div>';
+    // small crash sound
+    if(window.audioCtx){ const o=window.audioCtx.createOscillator(); const g=window.audioCtx.createGain(); o.type='square'; o.frequency.value=120; g.gain.value=0.05; o.connect(g); g.connect(window.audioCtx.destination); o.start(); o.stop(window.audioCtx.currentTime+0.15); }
+  }
+
+  // bird vs pipes collision check (approx using rects)
+  const birdRect = { left: bird.x - bird.radius, right: bird.x + bird.radius, top: bird.y - bird.radius, bottom: bird.y + bird.radius };
+  for(let p of pipes){
+    const pipeTopRect = { left: p.x, right: p.x + pipeWidth, top:0, bottom:p.top };
+    const pipeBottomRect = { left: p.x, right: p.x + pipeWidth, top: p.top + pipeGap, bottom: h - groundHeight };
+    if(rectsIntersect(birdRect, pipeTopRect) || rectsIntersect(birdRect, pipeBottomRect)){
+      running = false; overlay.style.display='block'; overlay.innerHTML = '<h2>انتهت اللعبة</h2><div class="sm">نقاطك: '+score+' — أعلى: '+highScore+'</div><div class="sm" style="margin-top:8px">اضغط لإعادة التشغيل</div>';
+      if(window.audioCtx){ const o=window.audioCtx.createOscillator(); const g=window.audioCtx.createGain(); o.type='sawtooth'; o.frequency.value=200; g.gain.value=0.03; o.connect(g); g.connect(window.audioCtx.destination); o.start(); o.stop(window.audioCtx.currentTime+0.12); }
+    }
+  }
+}
+
+function draw(){
+  // clear
+  const w = canvas.width / devicePixelRatioBackup;
+  const h = canvas.height / devicePixelRatioBackup;
+  ctx.clearRect(0,0,w,h);
+
+  // sky gradient (already via CSS but redraw subtle background)
+  const sky = ctx.createLinearGradient(0,0,0,h);
+  sky.addColorStop(0,'#c7f0f8'); sky.addColorStop(1,'#70c5ce');
+  ctx.fillStyle = sky; ctx.fillRect(0,0,w,h);
+
+  // pipes
+  for(let p of pipes){
+    // top pipe
+    ctx.fillStyle = '#2d9c3b';
+    roundRect(ctx, p.x, 0, pipeWidth, p.top, 6, true, false);
+    // bottom pipe
+    roundRect(ctx, p.x, p.top + pipeGap, pipeWidth, h - groundHeight - (p.top + pipeGap), 6, true, false);
+  }
+
+  // ground
+  ctx.fillStyle = '#ded895';
+  ctx.fillRect(0, h - groundHeight, w, groundHeight);
+  // ground texture
+  ctx.fillStyle = 'rgba(0,0,0,0.03)';
+  for(let i=0;i<w;i+=24){ ctx.fillRect(i, h-groundHeight+10, 12, 6); }
+
+  // bird (circle with eye and wing)
+  ctx.save();
+  ctx.translate(bird.x, bird.y);
+  ctx.rotate(bird.angle);
+  // body
+  ctx.fillStyle = '#ffdd57'; ctx.beginPath(); ctx.ellipse(0,0,bird.radius*1.15,bird.radius,0,0,Math.PI*2); ctx.fill();
+  // wing
+  ctx.fillStyle = '#f0c843'; ctx.beginPath(); ctx.ellipse(-2,6,8,5,Math.PI/6,0,Math.PI*2); ctx.fill();
+  // eye
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(6,-3,6,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#000'; ctx.beginPath(); ctx.arc(7,-3,2.3,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  // score big center when running
+  if(running){ ctx.font = '48px system-ui, Arial'; ctx.fillStyle = 'rgba(1,10,15,0.7)'; ctx.textAlign='center'; ctx.fillText(score, w/2, 80); }
+}
+
+function roundRect(ctx, x, y, w, h, r, fill, stroke){
+  if(typeof r==='undefined') r=5;
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+  if(fill) ctx.fill(); if(stroke) ctx.stroke();
+}
+
+function loop(now){
+  const dt = Math.min(0.05, (now - lastTime)/1000);
+  update(dt);
+  draw();
+  lastTime = now;
+  requestAnimationFrame(loop);
+}
+
+canvas.addEventListener('click', ()=>{
+  // if game ended and overlay shown, restart on click
+  if(!running && overlay.style.display !== 'none'){
+    resetGame();
+    // start game on next flap
+  }
+});
+
+// start the render loop
+requestAnimationFrame((t)=>{ lastTime = t; requestAnimationFrame(loop); });
+
+</script>
+</body>
+</html>
